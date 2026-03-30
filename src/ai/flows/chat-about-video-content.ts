@@ -30,18 +30,18 @@ export async function chatAboutVideoContent(input: ChatAboutVideoContentInput): 
     ? chatHistory.map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.message}`).join('\n')
     : 'No previous messages';
 
-  // Use a generous portion of the transcript so the AI has full context
-  const maxTranscriptLen = 15000;
-  const trimmedTranscript = (transcript || '').substring(0, maxTranscriptLen);
+  // Use a generous portion of the content so the AI has full context
+  const maxContentLen = 25000;
+  const trimmedContent = (transcript || '').substring(0, maxContentLen);
   
-  console.log('[chatAboutVideoContent] Transcript length:', transcript?.length, 'Trimmed to:', trimmedTranscript.length);
+  console.log('[chatAboutVideoContent] Content length:', transcript?.length, 'Trimmed to:', trimmedContent.length);
   console.log('[chatAboutVideoContent] Question:', question);
   console.log('[chatAboutVideoContent] Chat history entries:', chatHistory?.length || 0);
 
-  const prompt = `You are an intelligent AI assistant specialized in analyzing YouTube video content. You have access to the full video transcript below and should use it to answer the user's question accurately, thoroughly, and helpfully.
+  const prompt = `You are an intelligent AI assistant specialized in analyzing YouTube video content. You have access to the full video context below, which includes the video transcript, an AI-generated overview, key points, and a detailed summary. Use ALL of these sources to answer the user's question accurately, thoroughly, and helpfully.
 
-FULL VIDEO TRANSCRIPT:
-${trimmedTranscript}
+VIDEO CONTENT:
+${trimmedContent}
 
 PREVIOUS CONVERSATION:
 ${historyText}
@@ -49,10 +49,11 @@ ${historyText}
 USER'S QUESTION: ${question}
 
 INSTRUCTIONS:
-- Answer based ONLY on the video content provided above
-- Be specific and reference details from the transcript
-- If the transcript doesn't contain information to answer the question, say so honestly
+- Answer based on ALL the video content provided above (transcript, overview, key points, and summary)
+- Be specific and reference details from any of the provided sections
+- If the content doesn't contain information to answer the question, say so honestly
 - Be conversational and helpful
+- When relevant, reference key points or summary insights for more structured answers
 
 Respond in this exact JSON format:
 { "answer": "your detailed answer here" }

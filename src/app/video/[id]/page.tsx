@@ -134,19 +134,29 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
     setChatLoading(true);
 
     try {
+      // Build rich context: transcript + AI-generated insights
+      let richContext = transcriptText || '';
+      if (summaryData) {
+        const summaryContext = [
+          `\n\n=== AI-GENERATED OVERVIEW ===`,
+          summaryData.tldr || '',
+          `\n=== KEY POINTS ===`,
+          ...(summaryData.keyPoints || []).map((p, i) => `${i + 1}. ${p}`),
+          `\n=== DETAILED SUMMARY ===`,
+          summaryData.detailedSummary || '',
+        ].join('\n');
+        richContext = richContext + summaryContext;
+      }
+
       const response = await chatAboutVideoContent({
-        transcript: transcriptText || videoData?.title || '',
+        transcript: richContext || videoData?.title || '',
         chatHistory: chatHistory.map(h => ({ role: h.role as 'user' | 'assistant', message: h.message })),
         question: userMessage
       });
       setChatHistory(prev => [...prev, { role: 'assistant', message: response.answer }]);
     } catch (error) {
       console.error('Chat error:', error);
-      toast({
-        title: "CHAT ERROR",
-        description: "Unable to process your question. Please try again.",
-        variant: "destructive"
-      });
+      setChatHistory(prev => [...prev, { role: 'assistant', message: "Sorry, I couldn't process that question. Please try again." }]);
     } finally {
       setChatLoading(false);
     }
@@ -292,29 +302,26 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
 
   // Share (Web Share API - 100% free)
   const handleShare = async () => {
-    const shareData = {
-      title: videoData?.title || "Video Summary",
-      text: `Check out this video summary: ${videoData?.title}`,
-      url: window.location.href
-    };
+    try {
+      const shareData = {
+        title: videoData?.title || "Video Summary",
+        text: `Check out this video summary: ${videoData?.title}`,
+        url: typeof window !== 'undefined' ? window.location.href : ''
+      };
 
-    if (navigator.share) {
-      try {
-        await navigator.share(shareData);
-        toast({
-          title: "SHARED",
-          description: "Summary shared successfully!",
-        });
-      } catch (err) {
-        // User cancelled or share failed
+      if (typeof navigator !== 'undefined' && navigator.share) {
+        try {
+          await navigator.share(shareData);
+          toast({ title: "SHARED", description: "Summary shared successfully!" });
+        } catch {
+          // User cancelled or share failed
+        }
+      } else if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(shareData.url);
+        toast({ title: "LINK COPIED", description: "URL copied to clipboard!" });
       }
-    } else {
-      // Fallback: copy to clipboard
-      await navigator.clipboard.writeText(window.location.href);
-      toast({
-        title: "LINK COPIED",
-        description: "URL copied to clipboard!",
-      });
+    } catch {
+      // Suppress all share errors
     }
   };
 
@@ -322,27 +329,30 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
   const handleCopySummary = async () => {
     if (!summaryData) return;
     
-    const textToCopy = `
+    try {
+      const textToCopy = `
 ${videoData?.title || "Video Summary"}
 
 QUICK OVERVIEW:
 ${summaryData.tldr}
 
 KEY POINTS:
-${summaryData.keyPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}
+${(summaryData.keyPoints || []).map((p, i) => `${i + 1}. ${p}`).join('\n')}
 
 DETAILED SUMMARY:
 ${summaryData.detailedSummary}
-    `.trim();
+      `.trim();
 
-    await navigator.clipboard.writeText(textToCopy);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    
-    toast({
-      title: "COPIED",
-      description: "Summary copied to clipboard!",
-    });
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(textToCopy);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      
+      toast({ title: "COPIED", description: "Summary copied to clipboard!" });
+    } catch {
+      // Suppress clipboard errors
+    }
   };
 
   // Loading state
@@ -572,7 +582,7 @@ ${summaryData.detailedSummary}
                   <Card className="border-none shadow-lg">
                     <CardContent className="p-6">
                       <div className="grid gap-4">
-                        {summaryData?.keyPoints.map((point, idx) => (
+                        {(summaryData?.keyPoints || []).map((point, idx) => (
                           <div key={idx} className="flex gap-4 p-4 rounded-xl bg-zinc-50 hover:bg-zinc-100 transition-colors">
                             <div className="h-8 w-8 rounded-full bg-black text-white flex items-center justify-center font-bold text-sm shrink-0">
                               {idx + 1}

@@ -30,14 +30,44 @@ const AuthContext = createContext<AuthContextType>({
   logout: async () => {},
 });
 
+// Safe localStorage helpers (can throw in private browsing/incognito)
+function safeGetItem(key: string): string | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetItem(key: string, value: string): void {
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(key, value);
+    }
+  } catch {
+    // Silently fail - storage full or blocked
+  }
+}
+
+function safeRemoveItem(key: string): void {
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // Silently fail
+  }
+}
+
 // Generate a unique user ID for anonymous users
 function generateUserId(): string {
   if (typeof window === 'undefined') return 'anonymous';
   
-  let storedId = localStorage.getItem('vidinsight_user_id');
+  let storedId = safeGetItem('vidinsight_user_id');
   if (!storedId) {
     storedId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    localStorage.setItem('vidinsight_user_id', storedId);
+    safeSetItem('vidinsight_user_id', storedId);
   }
   return storedId;
 }
@@ -54,9 +84,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setUser(currentUser);
         } else {
           // Fallback to anonymous for now if no session
-          const storedUser = localStorage.getItem('vidinsight_user');
+          const storedUser = safeGetItem('vidinsight_user');
+          let parsed: User | null = null;
           if (storedUser) {
-            setUser(JSON.parse(storedUser));
+            try { parsed = JSON.parse(storedUser); } catch { parsed = null; }
+          }
+          if (parsed) {
+            setUser(parsed);
           } else {
             const anonymousUser: User = {
               id: generateUserId(),
@@ -66,11 +100,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
               isLoggedIn: false,
             };
             setUser(anonymousUser);
-            localStorage.setItem('vidinsight_user', JSON.stringify(anonymousUser));
+            safeSetItem('vidinsight_user', JSON.stringify(anonymousUser));
           }
         }
       } catch (error) {
         console.error("Auth initialization error:", error);
+        // Ensure we still have a user even on error
+        const fallbackUser: User = {
+          id: 'fallback',
+          uid: 'fallback',
+          name: 'Anonymous User',
+          isAnonymous: true,
+          isLoggedIn: false,
+        };
+        setUser(fallbackUser);
       } finally {
         setLoading(false);
       }
@@ -91,14 +134,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         isLoggedIn: false,
       };
       setUser(newUser);
-      localStorage.setItem('vidinsight_user', JSON.stringify(newUser));
+      safeSetItem('vidinsight_user', JSON.stringify(newUser));
     }
   };
 
   const logout = async () => {
-    await logoutAction();
-    localStorage.removeItem('vidinsight_user');
-    localStorage.removeItem('vidinsight_user_id');
+    try { await logoutAction(); } catch { /* suppress */ }
+    safeRemoveItem('vidinsight_user');
+    safeRemoveItem('vidinsight_user_id');
     
     // Create new anonymous user
     const newUser: User = {
@@ -109,8 +152,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       isLoggedIn: false,
     };
     setUser(newUser);
-    localStorage.setItem('vidinsight_user', JSON.stringify(newUser));
-    window.location.reload(); // Refresh to clear states
+    safeSetItem('vidinsight_user', JSON.stringify(newUser));
+    try { window.location.reload(); } catch { /* suppress */ }
   };
 
   return (
