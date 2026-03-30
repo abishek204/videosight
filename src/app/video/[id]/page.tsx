@@ -79,19 +79,25 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
         setVideoData(meta);
       }
 
-      // 2. Fetch Transcript (server action with retries built-in)
+      // 2. Fetch Transcript (never throws — returns {error} on failure)
       const rawTranscriptData = await fetchTranscriptAction(id, currentLang);
+      if (rawTranscriptData.error || !rawTranscriptData.fullText) {
+        throw new Error(rawTranscriptData.error || 'Transcript unavailable');
+      }
       setTranscriptText(rawTranscriptData.fullText);
       setTranscriptSegments(rawTranscriptData.segments);
 
-      // 3. Generate AI Summary (server action with retries built-in)
+      // 3. Generate AI Summary (never throws — returns {error} on failure)
       const summary = await summarizeYouTubeVideo({
         videoTitle: meta?.title || "Video",
         transcript: rawTranscriptData.fullText,
         length: length
       });
+      if (summary.error || !summary.tldr) {
+        throw new Error(summary.error || 'Summary generation failed');
+      }
       setSummaryData(summary);
-      setError(null); // Clear any previous error on success
+      setError(null);
 
       // 4. Save to history if user is logged in
       if (user?.isLoggedIn && forceFetch) {
@@ -103,25 +109,28 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
       }
 
     } catch (err: any) {
-      console.error(`[performAnalysis] Error (attempt ${retryCount + 1}):`, err?.message || err);
+      const errMsg = err?.message || '';
+      console.error(`[performAnalysis] Attempt ${retryCount + 1} failed:`, errMsg);
       
-      // Auto-retry on transient/server errors
+      // Auto-retry on any error (the server actions already retried internally)
       if (retryCount < MAX_CLIENT_RETRIES) {
         console.log(`[performAnalysis] Auto-retrying in ${(retryCount + 1) * 2}s...`);
         await new Promise(r => setTimeout(r, (retryCount + 1) * 2000));
         return performAnalysis(length, currentLang, forceFetch, retryCount + 1);
       }
 
-      // All retries exhausted — show clean error
-      const msg = 'Analysis failed. Please click Try Again.';
-      setError(msg);
+      // All retries exhausted — show the real error (not the sanitized one)
+      const cleanMsg = errMsg.includes('Server Components')
+        ? 'Analysis temporarily unavailable. Please try again.'
+        : (errMsg || 'Analysis failed. Please try again.');
+      setError(cleanMsg);
       toast({
         title: "ANALYSIS ERROR",
-        description: msg,
+        description: cleanMsg,
         variant: "destructive"
       });
     } finally {
-      if (retryCount >= MAX_CLIENT_RETRIES || !retryCount) {
+      if (retryCount >= MAX_CLIENT_RETRIES || retryCount === 0) {
         setLoading(false);
         setRecalculating(false);
       }
