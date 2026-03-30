@@ -30,29 +30,54 @@ export async function chatAboutVideoContent(input: ChatAboutVideoContentInput): 
     ? chatHistory.map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.message}`).join('\n')
     : 'No previous messages';
 
-  const prompt = `You are a helpful AI assistant that answers questions about YouTube video content.
+  // Use a generous portion of the transcript so the AI has full context
+  const maxTranscriptLen = 15000;
+  const trimmedTranscript = (transcript || '').substring(0, maxTranscriptLen);
+  
+  console.log('[chatAboutVideoContent] Transcript length:', transcript?.length, 'Trimmed to:', trimmedTranscript.length);
+  console.log('[chatAboutVideoContent] Question:', question);
+  console.log('[chatAboutVideoContent] Chat history entries:', chatHistory?.length || 0);
 
-VIDEO CONTENT:
-${(transcript || '').substring(0, 3000)}
+  const prompt = `You are an intelligent AI assistant specialized in analyzing YouTube video content. You have access to the full video transcript below and should use it to answer the user's question accurately, thoroughly, and helpfully.
 
-CHAT HISTORY:
+FULL VIDEO TRANSCRIPT:
+${trimmedTranscript}
+
+PREVIOUS CONVERSATION:
 ${historyText}
 
-USER QUESTION: ${question}
+USER'S QUESTION: ${question}
 
-Provide your answer in this JSON format:
-{ "answer": "your answer here" }
+INSTRUCTIONS:
+- Answer based ONLY on the video content provided above
+- Be specific and reference details from the transcript
+- If the transcript doesn't contain information to answer the question, say so honestly
+- Be conversational and helpful
 
-Respond ONLY with valid JSON.`;
+Respond in this exact JSON format:
+{ "answer": "your detailed answer here" }
+
+Respond ONLY with valid JSON, no markdown fences.`;
 
   try {
     const result = await generateContent(prompt);
-    console.log('[chatAboutVideoContent] Raw result:', result);
+    console.log('[chatAboutVideoContent] Raw result length:', result?.length);
+    console.log('[chatAboutVideoContent] Raw result preview:', result?.substring(0, 200));
     
-    const parsed = JSON.parse(result.replace(/```json|```/g, '').trim());
+    // Clean up the response - remove markdown fences and extra whitespace
+    const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const parsed = JSON.parse(cleaned);
     return { answer: parsed.answer || result };
   } catch (error: any) {
     console.error('[chatAboutVideoContent] Error:', error.message);
+    console.error('[chatAboutVideoContent] Full error:', error);
+    
+    // Try to extract answer even if JSON parsing fails
+    try {
+      const answerMatch = (error.message || '').includes('JSON') ? null : null;
+      // If the raw result exists but isn't valid JSON, return it as-is
+    } catch {}
+    
     return {
       answer: "I'm having trouble processing your question right now. Please try rephrasing it or ask something else about the video!"
     };

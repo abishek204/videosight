@@ -152,6 +152,19 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
     }
   };
 
+  // Sanitize text for PDF (replace non-ASCII chars that jsPDF can't render)
+  const sanitizeForPDF = (text: string): string => {
+    if (!text) return '';
+    return text
+      .replace(/[\u2018\u2019]/g, "'")  // smart single quotes
+      .replace(/[\u201C\u201D]/g, '"')  // smart double quotes
+      .replace(/\u2013/g, '-')           // en dash
+      .replace(/\u2014/g, '--')          // em dash
+      .replace(/\u2026/g, '...')         // ellipsis
+      .replace(/\u00A0/g, ' ')           // non-breaking space
+      .replace(/[^\x00-\x7F]/g, '');     // strip remaining non-ASCII
+  };
+
   // PDF Export (Client-side, 100% free)
   const handleExportPDF = () => {
     if (!summaryData || !videoData) return;
@@ -162,47 +175,114 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
       format: 'a4'
     });
 
-    // Title
-    doc.setFontSize(18);
-    doc.setFont("helvetica", "bold");
-    doc.text("VidInsight - Video Summary", 20, 20);
-    
-    // Video Info
-    doc.setFontSize(12);
-    doc.setFont("helvetica", "normal");
-    doc.text(videoData.title, 20, 35, { maxWidth: 170 });
-    
+    const pageWidth = 210;
+    const pageHeight = 297;
+    const margin = 20;
+    const contentWidth = pageWidth - margin * 2;
+    const lineHeight = 5.5;
+    let yPos = margin;
+
+    // Helper: check if we need a new page
+    const checkPageBreak = (neededSpace: number) => {
+      if (yPos + neededSpace > pageHeight - margin) {
+        doc.addPage();
+        yPos = margin;
+      }
+    };
+
+    // Helper: write wrapped text block and return new yPos
+    const writeTextBlock = (text: string, fontSize: number, fontStyle: string = 'normal') => {
+      doc.setFontSize(fontSize);
+      doc.setFont('helvetica', fontStyle);
+      const sanitized = sanitizeForPDF(text);
+      const lines: string[] = doc.splitTextToSize(sanitized, contentWidth);
+      for (const line of lines) {
+        checkPageBreak(lineHeight + 2);
+        doc.text(line, margin, yPos);
+        yPos += lineHeight;
+      }
+    };
+
+    // === Header ===
+    doc.setFontSize(20);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(0, 0, 0);
+    doc.text('VidInsight - Video Summary', margin, yPos);
+    yPos += 10;
+
+    // Divider line
+    doc.setDrawColor(200);
+    doc.setLineWidth(0.5);
+    doc.line(margin, yPos, pageWidth - margin, yPos);
+    yPos += 8;
+
+    // === Video Title ===
+    writeTextBlock(videoData.title, 14, 'bold');
+    yPos += 3;
+
+    // === Channel & Date ===
     doc.setFontSize(10);
-    doc.setTextColor(100);
-    doc.text(`Channel: ${videoData.channelName}`, 20, 45);
-    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 20, 50);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 100, 100);
+    doc.text(sanitizeForPDF(`Channel: ${videoData.channelName}`), margin, yPos);
+    yPos += 5;
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, margin, yPos);
+    yPos += 10;
 
-    // TL;DR
-    doc.setFontSize(14);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(0);
-    doc.text("Quick Overview", 20, 65);
-    
-    doc.setFontSize(11);
-    doc.setFont("helvetica", "normal");
-    const tldrLines = doc.splitTextToSize(summaryData.tldr, 170);
-    doc.text(tldrLines, 20, 72);
+    // Reset text color
+    doc.setTextColor(0, 0, 0);
 
-    // Key Points
-    let yPos = 72 + (tldrLines.length * 5) + 10;
+    // === Quick Overview ===
+    checkPageBreak(20);
     doc.setFontSize(14);
-    doc.setFont("helvetica", "bold");
-    doc.text("Key Points", 20, yPos);
-    
-    doc.setFontSize(11);
-    doc.setFont("helvetica", "normal");
+    doc.setFont('helvetica', 'bold');
+    doc.text('Quick Overview', margin, yPos);
+    yPos += 7;
+    writeTextBlock(summaryData.tldr, 11);
+    yPos += 8;
+
+    // === Key Points ===
+    checkPageBreak(20);
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Key Points', margin, yPos);
+    yPos += 7;
+
     summaryData.keyPoints.forEach((point, idx) => {
-      yPos += 8;
-      doc.text(`${idx + 1}. ${point.substring(0, 100)}${point.length > 100 ? '...' : ''}`, 20, yPos);
+      checkPageBreak(12);
+      const prefix = `${idx + 1}. `;
+      const sanitized = sanitizeForPDF(point);
+      const lines: string[] = doc.splitTextToSize(prefix + sanitized, contentWidth - 5);
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'normal');
+      for (const line of lines) {
+        checkPageBreak(lineHeight + 2);
+        doc.text(line, margin + 2, yPos);
+        yPos += lineHeight;
+      }
+      yPos += 2;
     });
+    yPos += 5;
 
-    // Save
-    doc.save(`${videoData.title.substring(0, 30)}-summary.pdf`);
+    // === Detailed Summary ===
+    if (summaryData.detailedSummary) {
+      checkPageBreak(20);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Detailed Summary', margin, yPos);
+      yPos += 7;
+      writeTextBlock(summaryData.detailedSummary, 11);
+    }
+
+    // === Footer on last page ===
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'italic');
+    doc.setTextColor(150, 150, 150);
+    doc.text('Generated by VidInsight - vidinsight.app', margin, pageHeight - 10);
+
+    // Save with sanitized filename
+    const safeTitle = sanitizeForPDF(videoData.title).substring(0, 30).replace(/[^a-zA-Z0-9 ]/g, '');
+    doc.save(`${safeTitle}-summary.pdf`);
     
     toast({
       title: "PDF DOWNLOADED",
@@ -560,19 +640,6 @@ ${summaryData.detailedSummary}
                           <p className="text-xs text-black/50">
                             I'll search the transcript and give you precise answers.
                           </p>
-                        </div>
-                        <div className="pt-4 grid grid-cols-1 gap-2">
-                          {["What's the main topic?", "Key takeaways?", "Any examples mentioned?"].map((suggestion) => (
-                            <Button
-                              key={suggestion}
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setQuestion(suggestion)}
-                              className="text-xs h-auto py-2 justify-start"
-                            >
-                              {suggestion}
-                            </Button>
-                          ))}
                         </div>
                       </div>
                     )}
