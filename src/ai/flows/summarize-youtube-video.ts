@@ -29,7 +29,7 @@ const SummarizeYouTubeVideoOutputSchema = z.object({
 });
 export type SummarizeYouTubeVideoOutput = z.infer<typeof SummarizeYouTubeVideoOutputSchema>;
 
-export async function summarizeYouTubeVideo(input: SummarizeYouTubeVideoInput): Promise<SummarizeYouTubeVideoOutput> {
+export async function summarizeYouTubeVideo(input: SummarizeYouTubeVideoInput): Promise<SummarizeYouTubeVideoOutput & { error?: string }> {
   const { videoTitle, transcript, length } = input;
 
   const prompt = `You are an Elite Intelligence Analyst. Your task is to transform a video transcript into a professional, high-fidelity report. 
@@ -53,12 +53,35 @@ REQUIRED STRUCTURE:
 Respond in this JSON format:
 {"tldr": "quick overview", "detailedSummary": "detailed summary", "keyPoints": ["point1", "point2"], "topicsWithTimestamps": [{"topic": "topic", "timestamp": "MM:SS"}]}`;
 
-  try {
-    const result = await generateContent(prompt);
-    const parsed = JSON.parse(result.replace(/```json|```/g, '').trim());
-    return parsed;
-  } catch (error: any) {
-    console.error('[summarizeYouTubeVideo] Error:', error.message);
-    throw new Error('Failed to generate summary: ' + error.message);
+  // Retry up to 3 times with increasing delay
+  const maxRetries = 3;
+  let lastError: any = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[summarizeYouTubeVideo] Attempt ${attempt}/${maxRetries}`);
+      const result = await generateContent(prompt);
+      const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+      return {
+        tldr: parsed.tldr || '',
+        detailedSummary: parsed.detailedSummary || '',
+        keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints : [],
+        topicsWithTimestamps: Array.isArray(parsed.topicsWithTimestamps) ? parsed.topicsWithTimestamps : [],
+      };
+    } catch (error: any) {
+      lastError = error;
+      console.error(`[summarizeYouTubeVideo] Attempt ${attempt} failed:`, error.message);
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+      }
+    }
   }
+
+  // NEVER throw from server actions — Next.js sanitizes error messages in production
+  console.error('[summarizeYouTubeVideo] All retries exhausted:', lastError?.message);
+  return {
+    tldr: '', detailedSummary: '', keyPoints: [], topicsWithTimestamps: [],
+    error: lastError?.message || 'Summary generation failed after multiple attempts'
+  };
 }

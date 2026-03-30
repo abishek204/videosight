@@ -204,7 +204,7 @@ async function generateTranscriptFromMetadata(videoId: string): Promise<{ text: 
 /**
  * SERVER ACTION - Fetch transcript with 100% success guarantee
  */
-export async function fetchTranscriptAction(videoId: string, lang: string = 'en'): Promise<{ fullText: string; segments: { text: string; offset: number }[] }> {
+export async function fetchTranscriptAction(videoId: string, lang: string = 'en'): Promise<{ fullText: string; segments: { text: string; offset: number }[]; error?: string }> {
   const cacheKey = `${videoId}:${lang}`;
   
   // Check cache
@@ -249,7 +249,7 @@ export async function fetchTranscriptAction(videoId: string, lang: string = 'en'
     }
 
     if (!transcript || transcript.length === 0) {
-      throw new Error('No transcript could be retrieved for this video. The video may not have captions available.');
+      return { fullText: '', segments: [], error: 'No transcript could be retrieved for this video.' };
     }
 
     // Format result
@@ -266,7 +266,8 @@ export async function fetchTranscriptAction(videoId: string, lang: string = 'en'
     return result;
   } catch (error: any) {
     console.error('[fetchTranscriptAction] Error:', error.message);
-    throw error;
+    // NEVER throw from server actions — Next.js sanitizes the message in production
+    return { fullText: '', segments: [], error: error.message || 'Transcript fetch failed' };
   }
 }
 

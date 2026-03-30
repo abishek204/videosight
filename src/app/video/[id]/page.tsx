@@ -64,14 +64,14 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState("tldr");
 
-  // Main analysis function
-  async function performAnalysis(length: SummaryLength, currentLang: string, forceFetch: boolean = false) {
+  // Main analysis function with auto-retry
+  async function performAnalysis(length: SummaryLength, currentLang: string, forceFetch: boolean = false, retryCount: number = 0) {
+    const MAX_CLIENT_RETRIES = 2;
     if (!forceFetch && !loading) setRecalculating(true);
-    setError(null);
+    if (retryCount === 0) setError(null);
 
     try {
       let meta = videoData;
-      let rawTranscriptData: any = null;
 
       // 1. Get Metadata
       if (!meta) {
@@ -79,33 +79,41 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
         setVideoData(meta);
       }
 
-      // 2. Fetch Transcript (SERVER ACTION - runs on server, not browser!)
-      try {
-        rawTranscriptData = await fetchTranscriptAction(id, currentLang);
-        setTranscriptText(rawTranscriptData.fullText);
-        setTranscriptSegments(rawTranscriptData.segments);
-      } catch (tError: any) {
-        throw new Error(tError.message || "Transcript unavailable for this video.");
-      }
+      // 2. Fetch Transcript (server action with retries built-in)
+      const rawTranscriptData = await fetchTranscriptAction(id, currentLang);
+      setTranscriptText(rawTranscriptData.fullText);
+      setTranscriptSegments(rawTranscriptData.segments);
 
-      // 3. Generate AI Summary
+      // 3. Generate AI Summary (server action with retries built-in)
       const summary = await summarizeYouTubeVideo({
         videoTitle: meta?.title || "Video",
         transcript: rawTranscriptData.fullText,
         length: length
       });
       setSummaryData(summary);
+      setError(null); // Clear any previous error on success
 
-      // 4. Save to Firestore if user is logged in (MongoDB required)
+      // 4. Save to history if user is logged in
       if (user?.isLoggedIn && forceFetch) {
-        await saveSummaryAction(user.uid, id, meta, summary);
+        try {
+          await saveSummaryAction(user.uid, id, meta, summary);
+        } catch {
+          // Silently fail - saving history shouldn't block the user
+        }
       }
 
     } catch (err: any) {
-      console.error('[performAnalysis] Full error:', err);
-      console.error('[performAnalysis] Message:', err?.message);
-      console.error('[performAnalysis] Cause:', err?.cause);
-      const msg = err.message || "Analysis failed. Please try again.";
+      console.error(`[performAnalysis] Error (attempt ${retryCount + 1}):`, err?.message || err);
+      
+      // Auto-retry on transient/server errors
+      if (retryCount < MAX_CLIENT_RETRIES) {
+        console.log(`[performAnalysis] Auto-retrying in ${(retryCount + 1) * 2}s...`);
+        await new Promise(r => setTimeout(r, (retryCount + 1) * 2000));
+        return performAnalysis(length, currentLang, forceFetch, retryCount + 1);
+      }
+
+      // All retries exhausted — show clean error
+      const msg = 'Analysis failed. Please click Try Again.';
       setError(msg);
       toast({
         title: "ANALYSIS ERROR",
@@ -113,8 +121,10 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
         variant: "destructive"
       });
     } finally {
-      setLoading(false);
-      setRecalculating(false);
+      if (retryCount >= MAX_CLIENT_RETRIES || !retryCount) {
+        setLoading(false);
+        setRecalculating(false);
+      }
     }
   }
 
