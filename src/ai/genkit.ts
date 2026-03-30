@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, HarmCategory, HarmBlockThreshold } from '@google/genai';
 
 const apiKey = process.env.GEMINI_API_KEY || '';
 
@@ -14,6 +14,14 @@ export async function generateContent(prompt: string): Promise<string> {
     const response = await ai.models.generateContent({
       model: 'gemini-flash-latest',
       contents: prompt,
+      config: {
+        safetySettings: [
+          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ],
+      }
     });
     const text = response.text || '';
     console.log('[genkit] Response length:', text.length);
