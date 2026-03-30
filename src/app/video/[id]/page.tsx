@@ -1,0 +1,653 @@
+"use client";
+
+import { useEffect, useState, use } from "react";
+import {
+  MessageSquare,
+  Download,
+  ChevronLeft,
+  Loader2,
+  Sparkles,
+  Share2,
+  RefreshCcw,
+  AlertCircle,
+  Clock,
+  Check,
+  Copy,
+  FileText,
+  Brain,
+  ListTodo,
+  MessageCircle,
+  ArrowRight,
+  Globe
+} from "lucide-react";
+import jsPDF from "jspdf";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import Navbar from "@/components/layout/Navbar";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "@/hooks/use-toast";
+import { summarizeYouTubeVideo, SummarizeYouTubeVideoOutput } from "@/ai/flows/summarize-youtube-video";
+import { chatAboutVideoContent } from "@/ai/flows/chat-about-video-content";
+import { fetchVideoMetadata, formatTimestamp } from "@/lib/youtube-utils";
+import { fetchTranscriptAction } from "@/app/actions/youtube";
+import { saveSummaryAction } from "@/app/actions/history";
+import { useAuth } from "@/context/auth-context";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+
+type SummaryLength = 'short' | 'medium' | 'long';
+
+export default function VideoDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const { user } = useAuth();
+  const router = useRouter();
+  
+  // State
+  const [loading, setLoading] = useState(true);
+  const [recalculating, setRecalculating] = useState(false);
+  const [videoData, setVideoData] = useState<any>(null);
+  const [summaryData, setSummaryData] = useState<SummarizeYouTubeVideoOutput | null>(null);
+  const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'assistant', message: string }[]>([]);
+  const [question, setQuestion] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [transcriptText, setTranscriptText] = useState("");
+  const [transcriptSegments, setTranscriptSegments] = useState<{ text: string, offset: number }[]>([]);
+  const [reportLength, setReportLength] = useState<SummaryLength>('medium');
+  const [language, setLanguage] = useState<string>('en');
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [activeTab, setActiveTab] = useState("tldr");
+
+  // Main analysis function
+  async function performAnalysis(length: SummaryLength, currentLang: string, forceFetch: boolean = false) {
+    if (!forceFetch && !loading) setRecalculating(true);
+    setError(null);
+
+    try {
+      let meta = videoData;
+      let rawTranscriptData: any = null;
+
+      // 1. Get Metadata
+      if (!meta) {
+        meta = await fetchVideoMetadata(id);
+        setVideoData(meta);
+      }
+
+      // 2. Fetch Transcript (SERVER ACTION - runs on server, not browser!)
+      try {
+        rawTranscriptData = await fetchTranscriptAction(id, currentLang);
+        setTranscriptText(rawTranscriptData.fullText);
+        setTranscriptSegments(rawTranscriptData.segments);
+      } catch (tError: any) {
+        throw new Error(tError.message || "Transcript unavailable for this video.");
+      }
+
+      // 3. Generate AI Summary
+      const summary = await summarizeYouTubeVideo({
+        videoTitle: meta?.title || "Video",
+        transcript: rawTranscriptData.fullText,
+        length: length
+      });
+      setSummaryData(summary);
+
+      // 4. Save to Firestore if user is logged in (MongoDB required)
+      if (user?.isLoggedIn && forceFetch) {
+        await saveSummaryAction(user.uid, id, meta, summary);
+      }
+
+    } catch (err: any) {
+      console.error('[performAnalysis] Full error:', err);
+      console.error('[performAnalysis] Message:', err?.message);
+      console.error('[performAnalysis] Cause:', err?.cause);
+      const msg = err.message || "Analysis failed. Please try again.";
+      setError(msg);
+      toast({
+        title: "ANALYSIS ERROR",
+        description: msg,
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+      setRecalculating(false);
+    }
+  }
+
+  // Initial load
+  useEffect(() => {
+    performAnalysis(reportLength, language, true);
+  }, [id]);
+
+  // Handle asking questions
+  const handleAskQuestion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!question.trim() || chatLoading || !transcriptText) return;
+
+    const userMessage = question.trim();
+    setQuestion("");
+    setChatHistory(prev => [...prev, { role: 'user', message: userMessage }]);
+    setChatLoading(true);
+
+    try {
+      const response = await chatAboutVideoContent({
+        transcript: transcriptText || videoData?.title || '',
+        chatHistory: chatHistory.map(h => ({ role: h.role as 'user' | 'assistant', message: h.message })),
+        question: userMessage
+      });
+      setChatHistory(prev => [...prev, { role: 'assistant', message: response.answer }]);
+    } catch (error) {
+      console.error('Chat error:', error);
+      toast({
+        title: "CHAT ERROR",
+        description: "Unable to process your question. Please try again.",
+        variant: "destructive"
+      });
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  // PDF Export (Client-side, 100% free)
+  const handleExportPDF = () => {
+    if (!summaryData || !videoData) return;
+
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    });
+
+    // Title
+    doc.setFontSize(18);
+    doc.setFont("helvetica", "bold");
+    doc.text("VidInsight - Video Summary", 20, 20);
+    
+    // Video Info
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "normal");
+    doc.text(videoData.title, 20, 35, { maxWidth: 170 });
+    
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Channel: ${videoData.channelName}`, 20, 45);
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 20, 50);
+
+    // TL;DR
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(0);
+    doc.text("Quick Overview", 20, 65);
+    
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "normal");
+    const tldrLines = doc.splitTextToSize(summaryData.tldr, 170);
+    doc.text(tldrLines, 20, 72);
+
+    // Key Points
+    let yPos = 72 + (tldrLines.length * 5) + 10;
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Key Points", 20, yPos);
+    
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "normal");
+    summaryData.keyPoints.forEach((point, idx) => {
+      yPos += 8;
+      doc.text(`${idx + 1}. ${point.substring(0, 100)}${point.length > 100 ? '...' : ''}`, 20, yPos);
+    });
+
+    // Save
+    doc.save(`${videoData.title.substring(0, 30)}-summary.pdf`);
+    
+    toast({
+      title: "PDF DOWNLOADED",
+      description: "Your summary has been exported successfully.",
+    });
+  };
+
+  // Share (Web Share API - 100% free)
+  const handleShare = async () => {
+    const shareData = {
+      title: videoData?.title || "Video Summary",
+      text: `Check out this video summary: ${videoData?.title}`,
+      url: window.location.href
+    };
+
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+        toast({
+          title: "SHARED",
+          description: "Summary shared successfully!",
+        });
+      } catch (err) {
+        // User cancelled or share failed
+      }
+    } else {
+      // Fallback: copy to clipboard
+      await navigator.clipboard.writeText(window.location.href);
+      toast({
+        title: "LINK COPIED",
+        description: "URL copied to clipboard!",
+      });
+    }
+  };
+
+  // Copy summary to clipboard
+  const handleCopySummary = async () => {
+    if (!summaryData) return;
+    
+    const textToCopy = `
+${videoData?.title || "Video Summary"}
+
+QUICK OVERVIEW:
+${summaryData.tldr}
+
+KEY POINTS:
+${summaryData.keyPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}
+
+DETAILED SUMMARY:
+${summaryData.detailedSummary}
+    `.trim();
+
+    await navigator.clipboard.writeText(textToCopy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    
+    toast({
+      title: "COPIED",
+      description: "Summary copied to clipboard!",
+    });
+  };
+
+  // Loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-white to-zinc-50 flex flex-col">
+        <Navbar />
+        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6">
+          <div className="relative">
+            <div className="absolute inset-0 bg-black/10 blur-xl rounded-full"></div>
+            <Loader2 className="h-16 w-16 text-black animate-spin relative" />
+          </div>
+          <div className="space-y-3 max-w-md">
+            <h2 className="text-2xl font-black uppercase tracking-tighter">Analyzing Video</h2>
+            <p className="text-black/50 font-medium">
+              Extracting transcript, generating insights, and preparing your summary...
+            </p>
+            <div className="flex items-center justify-center gap-4 pt-4">
+              <div className="flex items-center gap-2 text-xs text-black/40">
+                <Brain className="h-3.5 w-3.5" />
+                AI Processing
+              </div>
+              <div className="flex items-center gap-2 text-xs text-black/40">
+                <FileText className="h-3.5 w-3.5" />
+              Extracting Transcript
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-white to-zinc-50 flex flex-col">
+      <Navbar />
+
+      <main className="flex-1 container max-w-7xl mx-auto py-8 px-4 md:px-8">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-black/10">
+          <Button
+            variant="ghost"
+            onClick={() => router.push("/dashboard")}
+            className="w-fit gap-2 text-sm font-medium"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Back to History
+          </Button>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Language Select */}
+            <Select value={language} onValueChange={(val) => { setLanguage(val); performAnalysis(reportLength, val, true); }}>
+              <SelectTrigger className="w-[120px] h-10 text-sm">
+                <Globe className="h-4 w-4 mr-2" />
+                <SelectValue placeholder="Language" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="en">English</SelectItem>
+                <SelectItem value="es">Spanish</SelectItem>
+                <SelectItem value="fr">French</SelectItem>
+                <SelectItem value="de">German</SelectItem>
+                <SelectItem value="ja">Japanese</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Report Length */}
+            <Select value={reportLength} onValueChange={(val: SummaryLength) => { setReportLength(val); performAnalysis(val, language); }}>
+              <SelectTrigger className="w-[160px] h-10 text-sm">
+                <FileText className="h-4 w-4 mr-2" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="short">Quick Overview</SelectItem>
+                <SelectItem value="medium">Standard Summary</SelectItem>
+                <SelectItem value="long">Deep Dive</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Action Buttons */}
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={handleCopySummary}
+              className="h-10 w-10"
+              title="Copy summary"
+            >
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            </Button>
+
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={handleShare}
+              className="h-10 w-10"
+              title="Share"
+            >
+              <Share2 className="h-4 w-4" />
+            </Button>
+
+            <Button
+              variant="default"
+              size="icon"
+              onClick={handleExportPDF}
+              className="h-10 w-10 bg-black hover:bg-black/90"
+              title="Download PDF"
+            >
+              <Download className="h-4 w-4" />
+            </Button>
+
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => performAnalysis(reportLength, language, true)}
+              disabled={recalculating}
+              className="h-10 w-10"
+              title="Regenerate"
+            >
+              <RefreshCcw className={`h-4 w-4 ${recalculating ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
+        </div>
+
+        {error ? (
+          <Alert variant="destructive" className="my-8">
+            <AlertCircle className="h-5 w-5" />
+            <AlertTitle className="font-bold">Content Unavailable</AlertTitle>
+            <AlertDescription className="mt-2">
+              {error}
+            </AlertDescription>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => performAnalysis(reportLength, language, true)}
+              className="mt-4"
+            >
+              Try Again
+            </Button>
+          </Alert>
+        ) : (
+          <div className="grid lg:grid-cols-3 gap-8">
+            {/* Main Content */}
+            <div className="lg:col-span-2 space-y-6">
+              {/* Video Player */}
+              <div className="aspect-video w-full overflow-hidden rounded-2xl bg-black shadow-lg">
+                <iframe
+                  src={`https://www.youtube.com/embed/${id}`}
+                  className="h-full w-full"
+                  allowFullScreen
+                  title={videoData?.title || 'Video player'}
+                />
+              </div>
+
+              {/* Video Info */}
+              <div className="space-y-4">
+                <h1 className="text-2xl md:text-3xl font-black leading-tight">
+                  {videoData?.title}
+                </h1>
+                <div className="flex flex-wrap items-center gap-4 text-sm text-black/50">
+                  <Badge variant="outline" className="font-semibold">
+                    {videoData?.channelName}
+                  </Badge>
+                  <span>•</span>
+                  <span>{videoData?.publishedAt}</span>
+                  <span>•</span>
+                  <Badge className="bg-black text-white font-semibold">
+                    {reportLength === 'short' ? 'QUICK' : reportLength === 'long' ? 'DETAILED' : 'STANDARD'}
+                  </Badge>
+                </div>
+              </div>
+
+              {/* Tabs */}
+              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+                <TabsList className="w-full justify-start h-auto bg-transparent border-b border-black/10 rounded-none p-0 mb-6 gap-1">
+                  <TabsTrigger 
+                    value="tldr" 
+                    className="rounded-none border-b-2 border-transparent data-[state=active]:border-black data-[state=active]:bg-transparent px-4 py-3 font-semibold text-sm transition-all opacity-60 data-[state=active]:opacity-100"
+                  >
+                    <Brain className="h-4 w-4 mr-2" />
+                    Overview
+                  </TabsTrigger>
+                  <TabsTrigger 
+                    value="detailed"
+                    className="rounded-none border-b-2 border-transparent data-[state=active]:border-black data-[state=active]:bg-transparent px-4 py-3 font-semibold text-sm transition-all opacity-60 data-[state=active]:opacity-100"
+                  >
+                    <FileText className="h-4 w-4 mr-2" />
+                    Summary
+                  </TabsTrigger>
+                  <TabsTrigger 
+                    value="points"
+                    className="rounded-none border-b-2 border-transparent data-[state=active]:border-black data-[state=active]:bg-transparent px-4 py-3 font-semibold text-sm transition-all opacity-60 data-[state=active]:opacity-100"
+                  >
+                    <ListTodo className="h-4 w-4 mr-2" />
+                    Key Points
+                  </TabsTrigger>
+                  <TabsTrigger 
+                    value="transcript"
+                    className="rounded-none border-b-2 border-transparent data-[state=active]:border-black data-[state=active]:bg-transparent px-4 py-3 font-semibold text-sm transition-all opacity-60 data-[state=active]:opacity-100"
+                  >
+                    <MessageCircle className="h-4 w-4 mr-2" />
+                    Transcript
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="tldr" className="m-0">
+                  <Card className="border-none shadow-lg">
+                    <CardContent className="p-6">
+                      <p className="text-lg leading-relaxed font-medium">
+                        {summaryData?.tldr}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="detailed" className="m-0">
+                  <Card className="border-none shadow-lg">
+                    <CardContent className="p-6">
+                      <div className="prose prose-sm max-w-none">
+                        <p className="text-base leading-7 whitespace-pre-wrap">
+                          {summaryData?.detailedSummary}
+                        </p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="points" className="m-0">
+                  <Card className="border-none shadow-lg">
+                    <CardContent className="p-6">
+                      <div className="grid gap-4">
+                        {summaryData?.keyPoints.map((point, idx) => (
+                          <div key={idx} className="flex gap-4 p-4 rounded-xl bg-zinc-50 hover:bg-zinc-100 transition-colors">
+                            <div className="h-8 w-8 rounded-full bg-black text-white flex items-center justify-center font-bold text-sm shrink-0">
+                              {idx + 1}
+                            </div>
+                            <p className="text-base font-medium leading-relaxed pt-1">
+                              {point}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="transcript" className="m-0">
+                  <Card className="border-none shadow-lg">
+                    <CardContent className="p-6">
+                      <ScrollArea className="h-[500px]">
+                        <div className="space-y-4">
+                          {transcriptSegments.map((seg, idx) => (
+                            <div key={idx} className="flex gap-4 py-3 border-b border-black/5 last:border-0">
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Clock className="h-4 w-4 text-black/30" />
+                                <span className="text-xs font-mono font-medium text-black/50">
+                                  {formatTimestamp(seg.offset)}
+                                </span>
+                              </div>
+                              <p className="text-sm leading-relaxed">
+                                {seg.text}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </ScrollArea>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+              </Tabs>
+            </div>
+
+            {/* Chat Sidebar */}
+            <div className="lg:col-span-1">
+              <Card className="h-[calc(100vh-200px)] sticky top-8 flex flex-col border shadow-lg rounded-2xl overflow-hidden">
+                <CardHeader className="border-b bg-gradient-to-r from-black to-zinc-800 text-white p-6 shrink-0">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 bg-white/10 rounded-xl flex items-center justify-center">
+                      <MessageSquare className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-base font-bold">Ask About This Video</CardTitle>
+                      <p className="text-xs text-white/60">Get instant answers from the content</p>
+                    </div>
+                  </div>
+                </CardHeader>
+
+                <ScrollArea className="flex-1 p-6">
+                  <div className="space-y-4">
+                    {chatHistory.length === 0 && (
+                      <div className="text-center py-12 space-y-4">
+                        <div className="h-16 w-16 bg-black/5 rounded-2xl flex items-center justify-center mx-auto">
+                          <Sparkles className="h-8 w-8 text-black/20" />
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-sm font-bold">Ask anything about this video</p>
+                          <p className="text-xs text-black/50">
+                            I'll search the transcript and give you precise answers.
+                          </p>
+                        </div>
+                        <div className="pt-4 grid grid-cols-1 gap-2">
+                          {["What's the main topic?", "Key takeaways?", "Any examples mentioned?"].map((suggestion) => (
+                            <Button
+                              key={suggestion}
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setQuestion(suggestion)}
+                              className="text-xs h-auto py-2 justify-start"
+                            >
+                              {suggestion}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {chatHistory.map((msg, i) => (
+                      <div
+                        key={i}
+                        className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                      >
+                        <div
+                          className={`max-w-[85%] px-4 py-3 text-sm rounded-2xl ${
+                            msg.role === 'user'
+                              ? 'bg-black text-white'
+                              : 'bg-zinc-100 border border-black/5'
+                          }`}
+                        >
+                          {msg.message}
+                        </div>
+                      </div>
+                    ))}
+
+                    {chatLoading && (
+                      <div className="flex justify-start">
+                        <div className="bg-zinc-100 border border-black/5 rounded-2xl px-4 py-3 flex gap-2">
+                          <div className="h-2 w-2 bg-black/30 rounded-full animate-pulse" />
+                          <div className="h-2 w-2 bg-black/30 rounded-full animate-pulse [animation-delay:0.2s]" />
+                          <div className="h-2 w-2 bg-black/30 rounded-full animate-pulse [animation-delay:0.4s]" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+
+                <form onSubmit={handleAskQuestion} className="p-4 border-t bg-white shrink-0">
+                  <div className="flex gap-2">
+                    <Textarea
+                      placeholder="Ask a question..."
+                      className="flex-1 min-h-[44px] max-h-[120px] resize-none rounded-xl border-black/10 focus-visible:ring-black/20 text-sm"
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleAskQuestion(e);
+                        }
+                      }}
+                      disabled={chatLoading || !transcriptText}
+                      rows={1}
+                    />
+                    <Button
+                      type="submit"
+                      size="icon"
+                      disabled={chatLoading || !transcriptText}
+                      className="h-[44px] w-[44px] rounded-xl bg-black hover:bg-black/90 shrink-0"
+                    >
+                      <ArrowRight className="h-5 w-5" />
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-black/40 text-center mt-2">
+                    Press Enter to send, Shift+Enter for new line
+                  </p>
+                </form>
+              </Card>
+            </div>
+          </div>
+        )}
+      </main>
+
+      <footer className="border-t border-black/5 py-8 mt-16 bg-white">
+        <div className="container text-center">
+          <p className="text-xs text-black/40 font-medium">
+            Protected Private Analysis • Your data is secure
+          </p>
+        </div>
+      </footer>
+    </div>
+  );
+}

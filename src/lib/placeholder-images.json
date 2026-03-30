@@ -1,0 +1,16 @@
+{
+  "placeholderImages": [
+    {
+      "id": "hero-video",
+      "description": "Abstract AI video visualization",
+      "imageUrl": "https://picsum.photos/seed/vidinsight1/1200/600",
+      "imageHint": "artificial intelligence"
+    },
+    {
+      "id": "dashboard-empty",
+      "description": "Empty state for video history",
+      "imageUrl": "https://picsum.photos/seed/vidinsight2/600/400",
+      "imageHint": "video history"
+    }
+  ]
+}
