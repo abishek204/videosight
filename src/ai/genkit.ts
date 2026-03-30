@@ -10,9 +10,9 @@ export const ai = new GoogleGenAI({ apiKey });
 
 export async function generateContent(prompt: string): Promise<string> {
   try {
-    console.log('[genkit] Calling Gemini API with model: gemini-2.5-flash');
+    console.log('[genkit] Calling Gemini API with model: gemini-flash-latest');
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-flash-latest',
       contents: prompt,
     });
     const text = response.text || '';
