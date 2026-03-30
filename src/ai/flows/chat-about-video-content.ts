@@ -67,17 +67,28 @@ Respond ONLY with valid JSON, no markdown fences.`;
     
     // Clean up the response - remove markdown fences and extra whitespace
     const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    return { answer: parsed.answer || result };
-  } catch (error: any) {
-    console.error('[chatAboutVideoContent] Error:', error.message);
-    console.error('[chatAboutVideoContent] Full error:', error);
     
-    // Try to extract answer even if JSON parsing fails
     try {
-      const answerMatch = (error.message || '').includes('JSON') ? null : null;
-      // If the raw result exists but isn't valid JSON, return it as-is
-    } catch {}
+      const parsed = JSON.parse(cleaned);
+      return { answer: parsed.answer || result };
+    } catch (parseError) {
+      console.log('[chatAboutVideoContent] JSON parse failed, extracting raw text...');
+      // If it fails to parse (usually due to unescaped quotes or newlines), extract the value of "answer" manually
+      const match = cleaned.match(/"answer"\s*:\s*"([\s\S]*)"\s*}/);
+      if (match && match[1]) {
+        return { answer: match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"') };
+      }
+      
+      // If regex extraction fails, just strip the JSON wrapper and return whatever text there is
+      const fallbackText = cleaned
+        .replace(/^{?\s*"answer"\s*:\s*"?/, '')
+        .replace(/"?\s*}?$/, '')
+        .trim();
+        
+      return { answer: fallbackText || cleaned };
+    }
+  } catch (error: any) {
+    console.error('[chatAboutVideoContent] API Error:', error.message);
     
     return {
       answer: "I'm having trouble processing your question right now. Please try rephrasing it or ask something else about the video!"
