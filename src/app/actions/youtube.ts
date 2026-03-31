@@ -230,6 +230,80 @@ async function generateTranscriptFromMetadata(videoId: string, clientIp: string 
   }
 }
 
+/**
+ * METHOD 4: NoteGPT.io transcript API (external fallback)
+ * Uses their public API with rotating anonymous cookies
+ */
+async function fetchFromNoteGPT(videoId: string, lang: string = 'en'): Promise<{ text: string, offset: number }[] | null> {
+  try {
+    console.log('[NoteGPT] Fetching transcript from NoteGPT API...');
+    
+    const fakeCookie = crypto.randomUUID();
+    const response = await fetch(
+      `https://notegpt.io/api/v2/video-transcript?platform=youtube&video_id=${videoId}`,
+      {
+        method: 'GET',
+        headers: {
+          'accept': 'application/json',
+          'cookie': `anonymous_user_id=${fakeCookie}`,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        },
+      }
+    );
+
+    if (!response.ok) {
+      console.log(`[NoteGPT] HTTP ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    
+    if (data.code !== 100000 || !data.data) {
+      console.log(`[NoteGPT] API returned code ${data.code}`);
+      return null;
+    }
+
+    // Find the best language match from available transcripts
+    const transcripts = data.data.transcripts || {};
+    const languageCodes = data.data.language_code || [];
+    
+    // Try exact language match first
+    let targetLangCode = lang;
+    const langMatch = languageCodes.find((l: any) => l.code === lang || l.code?.startsWith(lang));
+    if (langMatch) {
+      targetLangCode = langMatch.code;
+    } else if (languageCodes.length > 0) {
+      // Fall back to first available language
+      targetLangCode = languageCodes[0].code;
+    }
+
+    const langTranscripts = transcripts[targetLangCode];
+    if (!langTranscripts) {
+      console.log(`[NoteGPT] No transcripts for language '${targetLangCode}'`);
+      return null;
+    }
+
+    // Prefer 'custom' (manual) captions, then 'auto'
+    const segments = langTranscripts.custom || langTranscripts.auto || [];
+    
+    if (segments.length === 0) {
+      console.log('[NoteGPT] No transcript segments found');
+      return null;
+    }
+
+    const result = segments.map((seg: any) => ({
+      text: (seg.text || '').replace(/\n/g, ' ').trim(),
+      offset: Math.round((seg.offset || seg.start || 0) * 1000),
+    })).filter((s: any) => s.text.length > 0);
+
+    console.log(`[NoteGPT] Extracted ${result.length} segments`);
+    return result.length > 0 ? result : null;
+  } catch (error: any) {
+    console.error('[NoteGPT] Error:', error.message);
+    return null;
+  }
+}
+
 import { headers } from 'next/headers';
 
 /**
@@ -283,9 +357,16 @@ export async function fetchTranscriptAction(videoId: string, lang: string = 'en'
     }
     
     if (!transcript || transcript.length === 0) {
-      console.log('[Method 3] Failed, using AI fallback...');
+      console.log('[Method 3] Failed, trying NoteGPT API...');
       
-      // METHOD 4: Generate from metadata (GUARANTEED to work)
+      // METHOD 4: NoteGPT external API
+      transcript = await fetchFromNoteGPT(videoId, lang);
+    }
+
+    if (!transcript || transcript.length === 0) {
+      console.log('[Method 4] Failed, using AI metadata fallback...');
+      
+      // METHOD 5: Generate from metadata (GUARANTEED to work)
       transcript = await generateTranscriptFromMetadata(videoId, clientIp);
     }
 

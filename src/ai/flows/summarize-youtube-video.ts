@@ -62,7 +62,14 @@ Respond in this JSON format:
       console.log(`[summarizeYouTubeVideo] Attempt ${attempt}/${maxRetries}`);
       const result = await generateContent(prompt);
       const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-      const parsed = JSON.parse(cleaned);
+      let jsonString = cleaned;
+      const firstBrace = cleaned.indexOf('{');
+      const lastBrace = cleaned.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        jsonString = cleaned.slice(firstBrace, lastBrace + 1);
+      }
+      
+      const parsed = JSON.parse(jsonString);
       return {
         tldr: parsed.tldr || '',
         detailedSummary: parsed.detailedSummary || '',
