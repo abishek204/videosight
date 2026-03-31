@@ -291,10 +291,23 @@ async function fetchFromNoteGPT(videoId: string, lang: string = 'en'): Promise<{
       return null;
     }
 
-    const result = segments.map((seg: any) => ({
-      text: (seg.text || '').replace(/\n/g, ' ').trim(),
-      offset: Math.round((seg.offset || seg.start || 0) * 1000),
-    })).filter((s: any) => s.text.length > 0);
+    const result = segments.map((seg: any) => {
+      const text = (seg.text || '').replace(/\n/g, ' ').trim();
+      let offsetMs = 0;
+      const rawOffset = seg.offset || seg.start || 0;
+      if (typeof rawOffset === 'string' && rawOffset.includes(':')) {
+        // Parse "HH:MM:SS" or "MM:SS" string format
+        const parts = rawOffset.split(':').map(Number);
+        if (parts.length === 3) {
+          offsetMs = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+        } else if (parts.length === 2) {
+          offsetMs = (parts[0] * 60 + parts[1]) * 1000;
+        }
+      } else {
+        offsetMs = Math.round(Number(rawOffset) * 1000);
+      }
+      return { text, offset: isNaN(offsetMs) ? 0 : offsetMs };
+    }).filter((s: any) => s.text.length > 0);
 
     console.log(`[NoteGPT] Extracted ${result.length} segments`);
     return result.length > 0 ? result : null;
