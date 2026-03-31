@@ -64,40 +64,43 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState("tldr");
 
-  // Main analysis function with auto-retry
+  // Main analysis function — skips already-fetched data 
   async function performAnalysis(length: SummaryLength, currentLang: string, forceFetch: boolean = false, retryCount: number = 0) {
-    const MAX_CLIENT_RETRIES = 2;
+    const MAX_CLIENT_RETRIES = 1;
     if (!forceFetch && !loading) setRecalculating(true);
     if (retryCount === 0) setError(null);
 
     try {
       let meta = videoData;
 
-      // 1. Get Metadata
+      // 1. Get Metadata (skip if already have it)
       if (!meta) {
         meta = await fetchVideoMetadata(id);
         setVideoData(meta);
       }
 
-      // 2. Fetch Transcript (never throws — returns {error} on failure)
-      const rawTranscriptData = await fetchTranscriptAction(id, currentLang);
-      if (rawTranscriptData.error || !rawTranscriptData.fullText) {
-        throw new Error(rawTranscriptData.error || 'Transcript unavailable');
+      // 2. Fetch Transcript (skip if already have it and not force-fetching a new language)
+      let currentTranscript = transcriptText;
+      if (!currentTranscript || forceFetch) {
+        const rawTranscriptData = await fetchTranscriptAction(id, currentLang);
+        if (rawTranscriptData.error || !rawTranscriptData.fullText) {
+          throw new Error(rawTranscriptData.error || 'Transcript unavailable');
+        }
+        currentTranscript = rawTranscriptData.fullText;
+        setTranscriptText(rawTranscriptData.fullText);
+        setTranscriptSegments(rawTranscriptData.segments);
       }
-      setTranscriptText(rawTranscriptData.fullText);
-      setTranscriptSegments(rawTranscriptData.segments);
 
-      // 3. Generate Summary (AI-enhanced if available, otherwise from transcript directly)
-      // This NEVER fails — it has a guaranteed fallback built in
+      // 3. Generate Summary (AI with fallback — never fails)
       const summary = await summarizeYouTubeVideo({
         videoTitle: meta?.title || "Video",
-        transcript: rawTranscriptData.fullText,
+        transcript: currentTranscript,
         length: length
       });
       setSummaryData(summary);
       setError(null);
 
-      // 4. Save to history if user is logged in
+      // 4. Save to history if user is logged in (only on first load)
       if (user?.isLoggedIn && forceFetch) {
         try {
           await saveSummaryAction(user.uid, id, meta, summary);
@@ -110,14 +113,12 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
       const errMsg = err?.message || '';
       console.error(`[performAnalysis] Attempt ${retryCount + 1} failed:`, errMsg);
       
-      // Auto-retry on any error (the server actions already retried internally)
       if (retryCount < MAX_CLIENT_RETRIES) {
-        console.log(`[performAnalysis] Auto-retrying in ${(retryCount + 1) * 2}s...`);
-        await new Promise(r => setTimeout(r, (retryCount + 1) * 2000));
+        console.log(`[performAnalysis] Auto-retrying in 2s...`);
+        await new Promise(r => setTimeout(r, 2000));
         return performAnalysis(length, currentLang, forceFetch, retryCount + 1);
       }
 
-      // All retries exhausted — show the real error (not the sanitized one)
       const cleanMsg = errMsg.includes('Server Components')
         ? 'Analysis temporarily unavailable. Please try again.'
         : (errMsg || 'Analysis failed. Please try again.');
@@ -128,14 +129,12 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
         variant: "destructive"
       });
     } finally {
-      if (retryCount >= MAX_CLIENT_RETRIES || retryCount === 0) {
-        setLoading(false);
-        setRecalculating(false);
-      }
+      setLoading(false);
+      setRecalculating(false);
     }
   }
 
-  // Initial load
+  // Initial load — only once per video
   useEffect(() => {
     performAnalysis(reportLength, language, true);
   }, [id]);
@@ -436,7 +435,7 @@ ${summaryData.detailedSummary}
             </Select>
 
             {/* Report Length */}
-            <Select value={reportLength} onValueChange={(val: SummaryLength) => { setReportLength(val); performAnalysis(val, language); }}>
+            <Select value={reportLength} onValueChange={(val: SummaryLength) => { setReportLength(val); performAnalysis(val, language, false); }}>
               <SelectTrigger className="w-[160px] h-10 text-sm">
                 <FileText className="h-4 w-4 mr-2" />
                 <SelectValue />
