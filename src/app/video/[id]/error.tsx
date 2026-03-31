@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
-import { AlertCircle, RefreshCcw, Home } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertCircle, RefreshCcw, Home, Loader2 } from "lucide-react";
 import Link from "next/link";
 
 export default function VideoError({
@@ -11,9 +11,31 @@ export default function VideoError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const [autoRetrying, setAutoRetrying] = useState(true);
+
   useEffect(() => {
-    console.error("[VideoError] Suppressed error:", error?.message);
-  }, [error]);
+    console.error("[VideoError] Caught error:", error?.message);
+    
+    // Auto-retry once after 1.5 seconds
+    const timer = setTimeout(() => {
+      setAutoRetrying(false);
+      reset();
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [error, reset]);
+
+  // While auto-retrying, show a loading state instead of the error
+  if (autoRetrying) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+        <div className="max-w-md w-full text-center space-y-4">
+          <Loader2 className="h-10 w-10 animate-spin mx-auto text-black/40" />
+          <p className="text-sm text-gray-500 font-medium">Loading analysis...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">

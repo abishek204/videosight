@@ -75,43 +75,67 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
 
       // 1. Get Metadata (skip if already have it)
       if (!meta) {
-        meta = await fetchVideoMetadata(id);
-        setVideoData(meta);
+        try {
+          meta = await fetchVideoMetadata(id);
+          setVideoData(meta);
+        } catch (e: any) {
+          console.error('[performAnalysis] Metadata fetch failed:', e?.message);
+          meta = { title: `Video (${id})`, thumbnail: `https://img.youtube.com/vi/${id}/maxresdefault.jpg`, channelName: 'YouTube', publishedAt: 'Video' };
+          setVideoData(meta);
+        }
       }
 
       // 2. Fetch Transcript (skip if already have it and not force-fetching a new language)
       let currentTranscript = transcriptText;
       if (!currentTranscript || forceFetch) {
-        const rawTranscriptData = await fetchTranscriptAction(id, currentLang);
-        if (rawTranscriptData.error || !rawTranscriptData.fullText) {
-          throw new Error(rawTranscriptData.error || 'Transcript unavailable');
+        try {
+          const rawTranscriptData = await fetchTranscriptAction(id, currentLang);
+          if (rawTranscriptData && rawTranscriptData.fullText) {
+            currentTranscript = rawTranscriptData.fullText;
+            setTranscriptText(rawTranscriptData.fullText);
+            setTranscriptSegments(rawTranscriptData.segments || []);
+          } else {
+            throw new Error(rawTranscriptData?.error || 'Transcript unavailable');
+          }
+        } catch (e: any) {
+          console.error('[performAnalysis] Transcript fetch failed:', e?.message);
+          if (!currentTranscript) {
+            setError('Could not load transcript. Please try again.');
+            setLoading(false);
+            setRecalculating(false);
+            return;
+          }
         }
-        currentTranscript = rawTranscriptData.fullText;
-        setTranscriptText(rawTranscriptData.fullText);
-        setTranscriptSegments(rawTranscriptData.segments);
       }
 
       // 3. Generate Summary (AI with fallback — never fails)
-      const summary = await summarizeYouTubeVideo({
-        videoTitle: meta?.title || "Video",
-        transcript: currentTranscript,
-        length: length
-      });
-      setSummaryData(summary);
-      setError(null);
+      try {
+        const summary = await summarizeYouTubeVideo({
+          videoTitle: meta?.title || "Video",
+          transcript: currentTranscript,
+          length: length
+        });
+        setSummaryData(summary);
+        setError(null);
+      } catch (e: any) {
+        console.error('[performAnalysis] Summary generation failed:', e?.message);
+        // If summary fails, show what we have (transcript is still available)
+        setError('Summary generation failed. Transcript is still available below.');
+      }
 
       // 4. Save to history if user is logged in (only on first load)
       if (user?.isLoggedIn && forceFetch) {
         try {
-          await saveSummaryAction(user.uid, id, meta, summary);
+          await saveSummaryAction(user.uid, id, meta, summaryData);
         } catch {
-          // Silently fail - saving history shouldn't block the user
+          // Silently fail
         }
       }
 
     } catch (err: any) {
-      const errMsg = err?.message || '';
-      console.error(`[performAnalysis] Attempt ${retryCount + 1} failed:`, errMsg);
+      // This catch handles truly unexpected errors that somehow escaped the above
+      const errMsg = err?.message || 'Unknown error';
+      console.error(`[performAnalysis] Unexpected error (attempt ${retryCount + 1}):`, errMsg);
       
       if (retryCount < MAX_CLIENT_RETRIES) {
         console.log(`[performAnalysis] Auto-retrying in 2s...`);
@@ -119,13 +143,10 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
         return performAnalysis(length, currentLang, forceFetch, retryCount + 1);
       }
 
-      const cleanMsg = errMsg.includes('Server Components')
-        ? 'Analysis temporarily unavailable. Please try again.'
-        : (errMsg || 'Analysis failed. Please try again.');
-      setError(cleanMsg);
+      setError('Analysis temporarily unavailable. Please try again.');
       toast({
         title: "ANALYSIS ERROR",
-        description: cleanMsg,
+        description: 'Analysis temporarily unavailable. Please try again.',
         variant: "destructive"
       });
     } finally {
