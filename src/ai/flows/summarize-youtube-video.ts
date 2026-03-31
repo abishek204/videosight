@@ -1,9 +1,16 @@
 
 'use server';
+
+
 /**
- * @fileOverview Video summarization flow that generates massive, comprehensive reports.
- *
- * - summarizeYouTubeVideo - Generates summaries based on video transcript data.
+ * @fileOverview Video summarization flow.
+ * 
+ * Architecture:
+ * 1. Try AI-powered summarization (Groq → Gemini → OpenAI)
+ * 2. If ALL AI providers fail, generate summary from transcript text directly
+ * 3. The result is GUARANTEED — the user never sees "Content Unavailable"
+ * 
+ * AI is only truly required for the chatbot (chat-about-video-content.ts).
  */
 
 import { generateContent } from '@/ai/genkit';
@@ -29,6 +36,99 @@ const SummarizeYouTubeVideoOutputSchema = z.object({
 });
 export type SummarizeYouTubeVideoOutput = z.infer<typeof SummarizeYouTubeVideoOutputSchema>;
 
+/**
+ * GUARANTEED fallback: Generate summary directly from transcript text.
+ * No AI needed. Extracts structure from raw transcript.
+ */
+function generateFallbackSummary(title: string, transcript: string, length: string): SummarizeYouTubeVideoOutput {
+  console.log('[Fallback Summary] Generating summary from transcript text (no AI)...');
+  
+  // Clean and split transcript into sentences
+  const cleanText = transcript
+    .replace(/\[.*?\]/g, '') // remove [Music], [Applause] etc
+    .replace(/♪[^♪]*♪/g, '') // remove music notes
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  const sentences = cleanText
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 15); // skip tiny fragments
+  
+  // If sentences couldn't be split (common for transcripts without punctuation), split by chunks
+  const chunks = sentences.length >= 5 ? sentences : cleanText.split(/\s{2,}|,\s+/).filter(s => s.length > 15);
+  const usable = chunks.length >= 3 ? chunks : [cleanText];
+
+  // --- TLDR (Overview) ---
+  const tldrSentenceCount = length === 'short' ? 2 : length === 'long' ? 5 : 3;
+  const tldr = usable.slice(0, Math.min(tldrSentenceCount, usable.length)).join(' ');
+
+  // --- Key Points ---
+  // Pick evenly-spaced sentences from across the transcript
+  const numPoints = length === 'short' ? 3 : length === 'long' ? 8 : 5;
+  const keyPoints: string[] = [];
+  const step = Math.max(1, Math.floor(usable.length / numPoints));
+  for (let i = 0; i < usable.length && keyPoints.length < numPoints; i += step) {
+    const point = usable[i].length > 200 ? usable[i].substring(0, 200) + '...' : usable[i];
+    keyPoints.push(point);
+  }
+  // Ensure we have at least some points
+  if (keyPoints.length === 0 && cleanText.length > 0) {
+    keyPoints.push(cleanText.substring(0, 200));
+  }
+
+  // --- Detailed Summary ---
+  let detailedSummary: string;
+  if (length === 'short') {
+    detailedSummary = usable.slice(0, Math.min(5, usable.length)).join(' ');
+  } else if (length === 'long') {
+    // For long, use the entire transcript organized into paragraphs
+    const paragraphs: string[] = [];
+    const pSize = Math.ceil(usable.length / 6);
+    for (let i = 0; i < usable.length; i += pSize) {
+      paragraphs.push(usable.slice(i, i + pSize).join(' '));
+    }
+    detailedSummary = paragraphs.join('\n\n');
+  } else {
+    // Medium: use ~60% of sentences, organized into 3-4 paragraphs
+    const selected = usable.slice(0, Math.ceil(usable.length * 0.6));
+    const pSize = Math.ceil(selected.length / 3);
+    const paragraphs: string[] = [];
+    for (let i = 0; i < selected.length; i += pSize) {
+      paragraphs.push(selected.slice(i, i + pSize).join(' '));
+    }
+    detailedSummary = paragraphs.join('\n\n');
+  }
+
+  // --- Topics with Timestamps ---
+  // Divide transcript into ~5 equal time segments
+  const words = cleanText.split(/\s+/);
+  const numTopics = Math.min(5, Math.ceil(words.length / 50));
+  const topicsWithTimestamps: { topic: string; timestamp: string }[] = [];
+  const topicSize = Math.ceil(words.length / numTopics);
+  
+  for (let i = 0; i < numTopics; i++) {
+    const segWords = words.slice(i * topicSize, (i + 1) * topicSize);
+    const topicPreview = segWords.slice(0, 10).join(' ');
+    const minuteEstimate = Math.floor((i * topicSize / words.length) * (words.length / 3)); // rough minute estimate
+    const mins = Math.floor(minuteEstimate / 60);
+    const secs = minuteEstimate % 60;
+    topicsWithTimestamps.push({
+      topic: topicPreview + (segWords.length > 10 ? '...' : ''),
+      timestamp: `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`,
+    });
+  }
+
+  console.log(`[Fallback Summary] Generated: tldr=${tldr.length}chars, points=${keyPoints.length}, summary=${detailedSummary.length}chars`);
+  
+  return {
+    tldr: tldr || `This video titled "${title}" covers the following content from the transcript.`,
+    detailedSummary: detailedSummary || cleanText.substring(0, 2000),
+    keyPoints: keyPoints.length > 0 ? keyPoints : [`Content from: ${title}`],
+    topicsWithTimestamps,
+  };
+}
+
 export async function summarizeYouTubeVideo(input: SummarizeYouTubeVideoInput): Promise<SummarizeYouTubeVideoOutput & { error?: string }> {
   const { videoTitle, transcript, length } = input;
 
@@ -53,13 +153,13 @@ REQUIRED STRUCTURE:
 Respond in this JSON format:
 {"tldr": "quick overview", "detailedSummary": "detailed summary", "keyPoints": ["point1", "point2"], "topicsWithTimestamps": [{"topic": "topic", "timestamp": "MM:SS"}]}`;
 
-  // Retry up to 3 times with increasing delay
-  const maxRetries = 3;
+  // Try AI-powered summarization (fast: single attempt with short delay)
+  const maxRetries = 2;
   let lastError: any = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`[summarizeYouTubeVideo] Attempt ${attempt}/${maxRetries}`);
+      console.log(`[summarizeYouTubeVideo] AI Attempt ${attempt}/${maxRetries}`);
       const result = await generateContent(prompt);
       const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
       let jsonString = cleaned;
@@ -78,17 +178,14 @@ Respond in this JSON format:
       };
     } catch (error: any) {
       lastError = error;
-      console.error(`[summarizeYouTubeVideo] Attempt ${attempt} failed:`, error.message);
+      console.error(`[summarizeYouTubeVideo] AI Attempt ${attempt} failed:`, error.message);
       if (attempt < maxRetries) {
-        await new Promise(r => setTimeout(r, 1000 * attempt));
+        await new Promise(r => setTimeout(r, 1000));
       }
     }
   }
 
-  // NEVER throw from server actions — Next.js sanitizes error messages in production
-  console.error('[summarizeYouTubeVideo] All retries exhausted:', lastError?.message);
-  return {
-    tldr: '', detailedSummary: '', keyPoints: [], topicsWithTimestamps: [],
-    error: lastError?.message || 'Summary generation failed after multiple attempts'
-  };
+  // === GUARANTEED FALLBACK: Generate summary from transcript text directly ===
+  console.log('[summarizeYouTubeVideo] All AI attempts failed. Using transcript-based fallback...');
+  return generateFallbackSummary(videoTitle, transcript, length);
 }

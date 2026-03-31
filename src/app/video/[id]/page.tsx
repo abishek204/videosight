@@ -87,15 +87,13 @@ export default function VideoDetailPage({ params }: { params: Promise<{ id: stri
       setTranscriptText(rawTranscriptData.fullText);
       setTranscriptSegments(rawTranscriptData.segments);
 
-      // 3. Generate AI Summary (never throws — returns {error} on failure)
+      // 3. Generate Summary (AI-enhanced if available, otherwise from transcript directly)
+      // This NEVER fails — it has a guaranteed fallback built in
       const summary = await summarizeYouTubeVideo({
         videoTitle: meta?.title || "Video",
         transcript: rawTranscriptData.fullText,
         length: length
       });
-      if (summary.error || !summary.tldr) {
-        throw new Error(summary.error || 'Summary generation failed');
-      }
       setSummaryData(summary);
       setError(null);
 
